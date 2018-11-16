@@ -3,7 +3,9 @@ import time
 import redis
 import json
 import pandas as pd
+
 from dutil import get_tickab
+from configs import cfg
 
 import logging
 logger = logging.getLogger(__name__)
@@ -71,6 +73,11 @@ class AShare(object):
         else:
             logging.warning('Bad stock code: %s', code)
 
+    def get_type(self, code):
+	if code[0] == '5':
+	    return 'etf'
+	return 'stock'
+
     def to_hand(self, x):
 	return (((x-1)/100)+1)*100
 
@@ -128,19 +135,18 @@ def normal_price(df):
 
 
 class TickFeed(object):
-    def __init__(self, source, live=False, market=AShare(), frequency=3):
+    def __init__(self, live=False, market=AShare(), frequency=3, host=None):
 	if live:
-           self.r = source
-	else:
-  	   self.path = source
+           self.r = host
 	self.live = live
         self.market = market
         self.frequency = frequency
 	self.tick_event = Event()
 
-    def read_files(self, date, instruments):
+    def read_files(self, date, instruments):        
 	for ins in instruments:
-	    fn = '{path}/{date}/tickab_{stock}.{date}'.format(path=self.path, date=date, stock=ins)
+	    path = cfg.path[self.market.get_type(ins)]
+	    fn = '{path}/{date}/tickab_{stock}.{date}'.format(path=path, date=date, stock=ins)
 	    with open(fn, 'rb') as f:
 		self.dfs[ins] = get_tickab(f)
 

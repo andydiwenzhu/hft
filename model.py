@@ -2,9 +2,12 @@ import datetime
 import redis
 import os
 import sys
+import argparse
 import pickle
+import getpass 
 import pandas as pd
 
+from configs import cfg
 from analyze import basic
 from tick_svm import Tick_SVM
 from redis_feed import TickFeed, AShare
@@ -64,23 +67,23 @@ class HiLo(PredictorFromTickab):
     Here we use Tick_SVM to predict both high and low
 
     '''
-    def __init__(self, path, date, instruments):
+    def __init__(self, date, instruments):
 	super(HiLo, self).__init__()
-	self.path = path
 	self.high = {}
 	self.low = {}
 	for ins in instruments:
-	    self.train_model(ins, date, back_days=4, forward_ticks=300)
+	    self.train_model(ins, date, cfg.HiLo.back_days, cfg.HiLo.forward_ticks)
 
 	
     def train_model(self, ins, date, back_days, forward_ticks):
-	dates = sorted([x for x in os.listdir(self.path) if x < date])[-back_days:]
+	path = cfg.path[AShare().get_type(ins)]
+	dates = sorted([x for x in os.listdir(path) if x < date])[-back_days:]
 	logger.info('Training model for %s on %s', ins, ','.join(dates))
 
-	self.high[ins] = Tick_SVM(path, 'ha')
+	self.high[ins] = Tick_SVM(path, cfg.HiLo.high)
 	self.high[ins].train(dates, ins, forward_ticks)
 
-        self.low[ins] = Tick_SVM(path, 'lb')
+        self.low[ins] = Tick_SVM(path, cfg.HiLo.low)
         self.low[ins].train(dates, ins, forward_ticks)
 
 
@@ -290,32 +293,43 @@ def set_logger(debug=False):
     logger.addHandler(console)
 
 
-if __name__ == '__main__':
-    inst = '510500'
-    path = '/home/pub/tick/tony/etf'
-    if len(sys.argv) > 1:
-	inst = sys.argv[1]	
-	path = '/home/pub/tick/wdhh/daily'
+def task_template(no, instrument):
+    if no == 0:
+        return {instrument: {'buy': 100000, 'sell': 100000}}
 
-    host = redis.Redis('192.168.128.23')
-    name = 'sim'
-    accounts = {'buy':'sim_buy', 'sell':'sim_sell'}
-    tasks = {
-        inst: {'buy': 100000, 'sell': 100000},
-    }
-  
-    if len(sys.argv) > 2 and sys.argv[2] == 'live': 
-	set_logger(True)
-        feed = TickFeed(host, live=True, frequency=3)
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter)
+    parser.add_argument("-i", "--instrument", default='510500', help="the instrument")
+    parser.add_argument("-d", "--date", default=None, help="the date")
+    parser.add_argument("--name", default='sim', help="broker name")    
+    parser.add_argument("--live", action="store_true", help="live mode")
+    parser.add_argument("--debug", action="store_true", help="debug mode")
+    parser.add_argument("--task", default=0, help="task templates\n 0: buy and sell 100,000 shares")
+
+    args = parser.parse_args()
+    set_logger(args.debug)  
+
+    inst = args.instrument
+    tasks = task_template(args.task, instrument=inst)
+    user = getpass.getuser()
+    db = cfg.redis.db[user]
+    host = redis.Redis(cfg.redis.host, db=db)
+    name = args.name
+    accounts = cfg.accounts[name]
+    interval = cfg.twap.interval
+
+    if args.live:
+        feed = TickFeed(live=True, frequency=cfg.feed.frequency, host=host)
 	date = datetime.datetime.now().strftime('%Y%m%d')
     else:
-	set_logger()
-	feed = TickFeed(path, live=False, frequency=3)
-        date = '20181109'    
+	feed = TickFeed(live=False, frequency=cfg.feed.frequency)
+	assert(args.date)
+        date = args.date    
  
     broker = Broker(host, name, accounts, date=date)
-    predictor = HiLo(path, date, tasks.keys())
-    algo = TWAP(broker, predictor, tasks, date, interval=600)
+    predictor = HiLo(date, tasks.keys())
+    algo = TWAP(broker, predictor, tasks, date, interval=interval)
 
     feed.tick_event.subscribe(broker.on_tick)
     feed.tick_event.subscribe(algo.on_feed)
