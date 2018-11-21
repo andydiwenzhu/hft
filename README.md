@@ -1,4 +1,4 @@
-# HFT 0.1
+# HFT 0.1.2
 
 Modules
 - feed
