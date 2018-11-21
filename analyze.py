@@ -1,6 +1,13 @@
 import pickle
+import numpy as np
 import os
 import pandas as pd
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt, mpld3
+from mpld3 import plugins
+from configs import cfg
+from dutil import get_tickab
 from redis_feed import AShare
 import logging
 logger = logging.getLogger(__name__)
@@ -39,12 +46,49 @@ def check_twap(results, ins, date, interval, tasks, market=AShare()):
     print 'error:', error, 'max share:', ms
 
 
+
+def draw(ins, date, result):
+    path = cfg.path[AShare().get_type(ins)]
+    fn = '{path}/{date}/tickab_{stock}.{date}'.format(path=path, date=date, stock=ins)
+    with open(fn, 'rb') as f:
+        df = get_tickab(f)
+    deals = pd.DataFrame(result['deals'])
+    deals['nt'] = deals['dt'].apply(lambda x: (((x.hour*100+x.minute)*100)+x.second)*1000).astype('int32')
+
+    deals = deals.set_index('nt')
+    deals = deals.reindex(df.nTime.unique(), method='backfill', limit=1).dropna()
+    df = df.join(deals, on='nTime')
+   
+    t = df['nTime']
+    x = list(df.index)
+    p = df['nPrice']
+    b = df['avg_price'].mask(df['bsflag']!='buy', None).dropna()
+    s = df['avg_price'].mask(df['bsflag']!='sell', None).dropna()
+
+    plt.figure(figsize=(20,10), dpi=80)
+    plt.xticks(x[::600]+x[-1:],['%d:%02d'%(i/10000000, i/100000%100) for i in t[::600]]+['15:00'])
+    plt.yticks(np.linspace(min(p),max(p),10,endpoint=True))
+    plt.ylim(min(p), max(p))
+
+    plt.grid(True, 'major', 'x')
+    plt.scatter(list(b.index), b, 50, color='green') 
+    plt.scatter(list(s.index), s, 50, color='red')
+    plt.plot(x, p)
+    
+    mpld3.show(ip='192.168.128.21',port=8887) 
+    
+
+
+
 if __name__ == '__main__':
     filename = sorted(os.listdir('results/'))[-1]
     print filename
     with open('results/'+filename, 'rb') as f:
         results = pickle.load(f)
 
+    draw('510500', '20181109', results['510500'])
+    exit()
+ 
     for ins in results:
 	print ins
 	check_twap(results, ins, 20181109, 240, {'002475':{'buy':100000,'sell':100000}})

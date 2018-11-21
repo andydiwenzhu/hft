@@ -5,6 +5,7 @@ import json
 import pandas as pd
 
 from dutil import get_tickab
+from util import get_ntime, normal_price
 from configs import cfg
 
 import logging
@@ -53,17 +54,15 @@ class Event(object):
             self.emitting = False
             self.apply_changes()
 
-
-
 class AShare(object):
     '''
-    market class, define trading hours and generate intervals for time-related algorithms, such as twap.
-    maybe we will split the interval fucntion from the market class in the future
+    market class, define trading hours and market related methods.
     '''
     am_open = datetime.time(9,35,0)
     am_close = datetime.time(11,30,0)
     pm_open = datetime.time(13,0,0)
     pm_close = datetime.time(14,55,0)
+    hand = 100
 
     def get_exchange(self, code):
         if code[0] in ['0','3']:
@@ -78,24 +77,38 @@ class AShare(object):
 	    return 'etf'
 	return 'stock'
 
-    def to_hand(self, x):
-	return (((x-1)/100)+1)*100
 
-    def generate_intervals(self, date, interval, tasks):
+class Task(object):
+    def __init__(self, template, instrument, market=AShare()):
+	self.tasks = self.from_template(template, instrument)
+        self.market = market
+
+    def get_instruments(self):
+	return self.tasks.keys()
+
+    def from_template(self, template, instrument):
+	if template == 0:
+	    return {instrument: {'buy': 100000, 'sell': 100000}}  
+	
+    def to_hand(self, x):
+	return (((x-1)/self.market.hand)+1)*self.market.hand
+
+    def generate_intervals(self, date, interval):
         self.intervals = []
 	self.pos = 0
-        dt = datetime.datetime.combine(datetime.date(date/10000, date%10000/100, date%100), self.am_open)
-        while dt.time() < self.pm_close:
+        dt = datetime.datetime.combine(datetime.date(date/10000, date%10000/100, date%100), self.market.am_open)
+        while dt.time() < self.market.pm_close:
             ndt = dt + datetime.timedelta(seconds=interval)
-            if dt.time() >= self.am_open and ndt.time() <= self.am_close or dt.time() >= self.pm_open and ndt.time() <= self.pm_close:
+            if (dt.time() >= self.market.am_open and ndt.time() <= self.market.am_close or 
+		dt.time() >= self.market.pm_open and ndt.time() <= self.market.pm_close):
                 self.intervals.append({'interval':(dt,ndt),'remain':{}})
             dt = ndt
-	for ins in tasks:
-	    for bs in tasks[ins]:
+	for ins in self.tasks:
+	    for bs in self.tasks[ins]:
 		s = 0
 		for i in range(len(self.intervals)):
 		    k = ins + bs
-		    x = self.to_hand(tasks[ins][bs]/len(self.intervals)*(i+1))
+		    x = self.to_hand(self.tasks[ins][bs]/len(self.intervals)*(i+1))
 		    if x <= s:
 			logger.error('error in task distribution: %s %s %s %s %s/%s', x, s, ins, bs, i, len(self.intervals))
 		    self.intervals[i]['remain'][k] = x - s
@@ -107,7 +120,7 @@ class AShare(object):
 		self.pos += 1
 	assert(self.pos < len(self.intervals))
 
-    def check_current(self, ins, bs, dt, maxcounts=1):
+    def check_current(self, ins, bs, dt):
 	if dt < self.intervals[self.pos]['interval'][0]:
 	    return 0
 	k = ins + bs
@@ -120,18 +133,6 @@ class AShare(object):
     def get_current_right(self):
 	return self.intervals[self.pos]['interval'][1]
 
-
-
-
-def get_ntime(tm):
-    return tm.hour*10000000+tm.minute*100000+tm.second*1000
-
-
-def normal_price(df):
-    for c in df.columns:
-	if 'Price' in c:
-	   df[c] /= 10000
-    return df
 
 
 class TickFeed(object):
@@ -161,7 +162,6 @@ class TickFeed(object):
         self.last_time = ntime
 	return ret
 
-
     def get_ticks_live(self, instruments):
 	ret = {}
 	for ins in instruments:
@@ -173,7 +173,6 @@ class TickFeed(object):
 		ret[ins] = normal_price(df)
                 self.cursor[ins] = latest
         return ret
-        
 
     def get_next_time(self):
         next_time = self.now + datetime.timedelta(seconds=self.frequency)
@@ -186,7 +185,6 @@ class TickFeed(object):
 	elif ntm >= self.market.pm_close:
 	   next_time = None
 	return next_time
-        
 
     def run(self, date=None, instruments=None):
 	'''
