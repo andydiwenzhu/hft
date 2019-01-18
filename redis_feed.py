@@ -61,11 +61,6 @@ class Event(object):
 def get_ts(dt):
     return calendar.timegm(dt.timetuple())
 
-
-class Huobip(object):
-    def __init__(self):
-        self.name = 'huobip'
-
 class AShare(object):
     '''
     market class, define trading hours and market related methods.
@@ -147,7 +142,7 @@ class Task(object):
 
 
 class TickFeed(object):
-    def __init__(self, live=False, market=Huobip(), frequency=1, host=None):
+    def __init__(self, live=False, market, frequency=1, host=None):
 	if live:
            self.r = host
 	self.live = live
