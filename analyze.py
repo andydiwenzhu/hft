@@ -2,8 +2,6 @@ import pickle
 import numpy as np
 import os
 import pandas as pd
-<<<<<<< HEAD
-=======
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt, mpld3
@@ -11,7 +9,6 @@ from mpld3 import plugins
 from configs import cfg
 from dutil import get_tickab
 from redis_feed import AShare
->>>>>>> f31f118d00beb5b3549367741e535afaa030338b
 import logging
 logger = logging.getLogger(__name__)
 
