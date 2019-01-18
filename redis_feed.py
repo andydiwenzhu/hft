@@ -1,3 +1,4 @@
+import calendar
 import datetime
 import time
 import redis
@@ -6,6 +7,8 @@ import pandas as pd
 
 from dutil import get_tickab
 from configs import cfg
+
+from tick_x import time_filter, trades
 
 import logging
 logger = logging.getLogger(__name__)
@@ -54,88 +57,17 @@ class Event(object):
             self.apply_changes()
 
 
-
-class AShare(object):
-    '''
-    market class, define trading hours and generate intervals for time-related algorithms, such as twap.
-    maybe we will split the interval fucntion from the market class in the future
-    '''
-    am_open = datetime.time(9,35,0)
-    am_close = datetime.time(11,30,0)
-    pm_open = datetime.time(13,0,0)
-    pm_close = datetime.time(14,55,0)
-
-    def get_exchange(self, code):
-        if code[0] in ['0','3']:
-	    return 'SZ'
-        elif code[0] == '6':
-            return 'SH'   
-        else:
-            logging.warning('Bad stock code: %s', code)
-
-    def get_type(self, code):
-	if code[0] == '5':
-	    return 'etf'
-	return 'stock'
-
-    def to_hand(self, x):
-	return (((x-1)/100)+1)*100
-
-    def generate_intervals(self, date, interval, tasks):
-        self.intervals = []
-	self.pos = 0
-        dt = datetime.datetime.combine(datetime.date(date/10000, date%10000/100, date%100), self.am_open)
-        while dt.time() < self.pm_close:
-            ndt = dt + datetime.timedelta(seconds=interval)
-            if dt.time() >= self.am_open and ndt.time() <= self.am_close or dt.time() >= self.pm_open and ndt.time() <= self.pm_close:
-                self.intervals.append({'interval':(dt,ndt),'remain':{}})
-            dt = ndt
-	for ins in tasks:
-	    for bs in tasks[ins]:
-		s = 0
-		for i in range(len(self.intervals)):
-		    k = ins + bs
-		    x = self.to_hand(tasks[ins][bs]/len(self.intervals)*(i+1))
-		    if x <= s:
-			logger.error('error in task distribution: %s %s %s %s %s/%s', x, s, ins, bs, i, len(self.intervals))
-		    self.intervals[i]['remain'][k] = x - s
-		    s = x
-
-    
-    def shift_intervals(self, dt):
-	while self.pos < len(self.intervals) and self.intervals[self.pos]['interval'][1] <= dt:
-		self.pos += 1
-	assert(self.pos < len(self.intervals))
-
-    def check_current(self, ins, bs, dt, maxcounts=1):
-	if dt < self.intervals[self.pos]['interval'][0]:
-	    return 0
-	k = ins + bs
-	return self.intervals[self.pos]['remain'][k]
-		
-    def add_current(self, ins, bs, shares):
-	k = ins + bs
-	self.intervals[self.pos]['remain'][k] -= shares
-
-    def get_current_right(self):
-	return self.intervals[self.pos]['interval'][1]
+def get_ts(dt):
+    return calendar.timegm(dt.timetuple())
 
 
-
-
-def get_ntime(tm):
-    return tm.hour*10000000+tm.minute*100000+tm.second*1000
-
-
-def normal_price(df):
-    for c in df.columns:
-	if 'Price' in c:
-	   df[c] /= 10000
-    return df
+class Huobip(object):
+    def __init__(self):
+        self.name = 'huobip'
 
 
 class TickFeed(object):
-    def __init__(self, live=False, market=AShare(), frequency=3, host=None):
+    def __init__(self, live=False, market=Huobip(), frequency=1, host=None):
 	if live:
            self.r = host
 	self.live = live
@@ -143,21 +75,29 @@ class TickFeed(object):
         self.frequency = frequency
 	self.tick_event = Event()
 
-    def read_files(self, date, instruments):        
+    def read_tick_files(self, date, instruments):        
 	for ins in instruments:
-	    path = cfg.path[self.market.get_type(ins)]
-	    fn = '{path}/{date}/tickab_{stock}.{date}'.format(path=path, date=date, stock=ins)
-	    with open(fn, 'rb') as f:
-		self.dfs[ins] = get_tickab(f)
+	    path = cfg.path['btc']
+	    fn = '{path}/ticks/{market}/{stock}.{date}'.format(path=path, market=self.market.name, date=date, stock=ins)
+	    self.ticks[ins] = time_filter(pd.read_csv(fn))
 
-    def get_ticks_offline(self, instruments):
-	ntime = get_ntime(self.now)
+    def read_trade_files(self, date, instruments):
+	for ins in instruments:
+	    path = cfg.path['btc']
+	    fn = '{path}/trades/{market}/{stock}.{date}'.format(path=path, market=self.market.name, date=date, stock=ins)
+	    self.trades[ins] = trades(pd.read_csv(fn, header=None, names=['extime','contract','price','bs','volume','exts','ttime','tts']))
+	
+
+    def get_ticks_trades_offline(self, instruments):
+	ntime = get_ts(self.now)
 	ret = {}
 	for ins in instruments:
-	    df = self.dfs[ins]
-	    sub = df.ix[(df.nTime>self.last_time)&(df.nTime<=get_ntime(self.now))]
+	    df = self.ticks[ins]
+	    sub = df.loc[(df.index>self.last_time)&(df.index<=ntime)]
+	    tf = self.trades[ins]
+	    trade = tf.loc[(tf.index>self.last_time)&(tf.index<=ntime)]
 	    if len(sub):
-		ret[ins] = sub
+		ret[ins] = sub.join(trade).fillna(0)
         self.last_time = ntime
 	return ret
 
@@ -177,14 +117,6 @@ class TickFeed(object):
 
     def get_next_time(self):
         next_time = self.now + datetime.timedelta(seconds=self.frequency)
-	ndt = next_time.date()
-        ntm = next_time.time()
-        if ntm < self.market.am_open:
-           next_time = datetime.datetime.combine(ndt, self.market.am_open)
-        elif ntm > self.market.am_close and ntm < self.market.pm_open:
-           next_time += datetime.timedelta(minutes=90)
-	elif ntm >= self.market.pm_close:
-	   next_time = None
 	return next_time
         
 
@@ -198,12 +130,14 @@ class TickFeed(object):
 	    self.now = datetime.datetime.now()
 	    self.date = self.now.date().strftime('%Y%m%d')
 	else:
-   	    self.last_time = get_ntime(self.market.am_open)-1
- 	    self.dfs = {}
-	    self.read_files(date, instruments)
-   	    self.now = datetime.datetime.combine(datetime.datetime.strptime(date, '%Y%m%d').date(), self.market.am_open)
+   	    self.last_time = 0
+ 	    self.ticks = {}
+	    self.trades = {}
+	    self.read_tick_files(date, instruments)
+	    self.read_trade_files(date, instruments)
+   	    self.now = datetime.datetime.strptime(date, '%Y-%m-%d')
 
-        while self.now:
+        while self.now.strftime('%Y-%m-%d') == date:
 	    if self.live:
 		w = (self.now - datetime.datetime.now()).total_seconds()
 	        if w > 0:
@@ -211,15 +145,13 @@ class TickFeed(object):
 		    time.sleep(w)
 	        x = self.get_ticks_live(instruments)
 	    else:
-		x = self.get_ticks_offline(instruments)
-   
-	    self.tick_event.emit(self.now, x)				
+		x = self.get_ticks_trades_offline(instruments)
+	
+	    self.tick_event.emit(self.now, x)		
 	    self.now = self.get_next_time()
 
 
-
 if __name__ == '__main__':
-    r = redis.Redis(host='192.168.128.23')
-    feed = TickFeed(r, live=True)
-    feed.run(instruments=['002475'])
+    feed = TickFeed(live=False)
+    feed.run(date='2018-11-25',instruments=['btc.usdt'])
 

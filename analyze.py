@@ -1,7 +1,6 @@
 import pickle
 import os
 import pandas as pd
-from redis_feed import AShare
 import logging
 logger = logging.getLogger(__name__)
 
@@ -20,7 +19,7 @@ def basic(dic, debug=False):
 
 
 
-def check_twap(results, ins, date, interval, tasks, market=AShare()):
+def check_twap(results, ins, date, interval, tasks, market):
     deals = sorted(results[ins]['deals'], key=lambda k: k['dt'])
     market.generate_intervals(date, interval, tasks)
 

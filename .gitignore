@@ -1,5 +1,6 @@
 /hftenv
 /log
+/old
 /results
 /etc
 *.pyc

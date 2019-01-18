@@ -108,19 +108,19 @@ class Broker(object):
 	if tick is None:
 	    return 0, 0
 	if stats['bsflag'] == 'buy':
-	    price_key = 'nAskPrice'
-	    volume_key = 'nAskVolume'
+	    price_key = 'ask_%d_p'
+	    volume_key = 'ask_%d_v'
 	else:
-	    price_key = 'nBidPrice'
-	    volume_key = 'nBidVolume'
+	    price_key = 'bid_%d_p'
+	    volume_key = 'bid_%d_v'
 
 	shares = 0
 	avg_fill_price = 0
-	for i in range(1,4):
-	    price = tick.iloc[-1]['%s_%d'%(price_key,i)]
-	    volume = tick.iloc[-1]['%s_%d'%(volume_key,i)]
+	for i in range(3):
+	    price = tick.iloc[-1][price_key%i]
+	    volume = tick.iloc[-1][volume_key%i]
 	    if stats['bsflag'] == 'buy' and stats['init_price'] >= price or stats['bsflag'] == 'sell' and stats['init_price'] <= price:
-		x = min(stats['init_volume']-stats['filled_volume']-shares, volume/(2**(3-i))/100*100)
+		x = min(stats['init_volume']-stats['filled_volume']-shares, volume/(2**(3-i)))
 		if x:
       		    avg_fill_price = (avg_fill_price*shares + price*x)/(shares+x)
 		    shares += x
