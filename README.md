@@ -1,4 +1,4 @@
-# HFT 0.1
+# HFT 0.1.2
 
 Modules
 - feed
@@ -6,6 +6,7 @@ Modules
 - predictor
 - algorithm
 - analyzer
+- task
 
 Feed
 - Live mode: read from redis
@@ -31,4 +32,8 @@ Algorithm
 
 Analyzer 
 - Analyze the trading results
-- Will be reorganized with drawer in version 0.2
+- Use draw method to plot the trading results
+
+Task
+- Provides templates to generate tasks
+- Do task management for algorithms like twap

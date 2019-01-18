@@ -10,7 +10,7 @@ import pandas as pd
 from configs import cfg
 from analyze import basic
 from tick_svm import Tick_SVM
-from redis_feed import TickFeed, AShare
+from redis_feed import TickFeed, Task
 from broker import Broker, State
 
 import logging
@@ -67,16 +67,17 @@ class HiLo(PredictorFromTickab):
     Here we use Tick_SVM to predict both high and low
 
     '''
-    def __init__(self, date, instruments):
+    def __init__(self, date, task):
 	super(HiLo, self).__init__()
 	self.high = {}
 	self.low = {}
-	for ins in instruments:
+	self.task = task
+	for ins in self.task.get_instruments():
 	    self.train_model(ins, date, cfg.HiLo.back_days, cfg.HiLo.forward_ticks)
 
 	
     def train_model(self, ins, date, back_days, forward_ticks):
-	path = cfg.path[AShare().get_type(ins)]
+	path = cfg.path[self.task.market.get_type(ins)]
 	dates = sorted([x for x in os.listdir(path) if x < date])[-back_days:]
 	logger.info('Training model for %s on %s', ins, ','.join(dates))
 
@@ -104,7 +105,7 @@ class HiLo(PredictorFromTickab):
 
 
     def buy(self, ins):
-	if self.factor_ready(ins):
+        if self.factor_ready(ins):
 	    factors = self.context[ins]['factors'][-1]
 	    return factors['high'][1] > 0.5 and factors['low'][0] > 0.5
 	else:
@@ -120,15 +121,14 @@ class HiLo(PredictorFromTickab):
 
 
 class Algorithm(object): 
-    def __init__(self, broker, predictor, tasks, market, time_limit):
+    def __init__(self, broker, predictor, task, time_limit):
 	self.broker = broker
-	self.tasks = tasks
-	self.market = market
+	self.task = task
 	self.time_limit = time_limit
 	self.predictor = predictor
 
 	self.active = {}
-	self.results = dict([(k, {}) for k in tasks])
+	self.results = dict([(k, {}) for k in task.get_instruments()])
 	
 
     def keep_results(self):
@@ -163,9 +163,9 @@ class Algorithm(object):
 
     def timeout(self, dt, now):
         x = now - dt
-	if dt.time() <= self.market.am_close and now.time() >= self.market.pm_open:
+	if dt.time() <= self.task.market.am_close and now.time() >= self.task.market.pm_open:
 		date = datetime.datetime.now().date()
-		x = (now - dt) - (datetime.datetime.combine(date, self.market.pm_open) - datetime.datetime.combine(date, self.market.am_close))
+		x = (now - dt) - (datetime.datetime.combine(date, self.task.market.pm_open) - datetime.datetime.combine(date, self.task.market.am_close))
 	return x.total_seconds() >= self.time_limit
 
 
@@ -196,10 +196,10 @@ class Algorithm(object):
 	self.now = dt
 	self.predictor.merge(self.now, feeds)
 
-        for ins in self.tasks:
+        for ins in self.task.get_instruments():
 	    self.predictor.update_factors(ins)
             order_status, cancel_status, active_no, active_dt, _, _= self.update_status(ins)
-
+ 	    
 	    if active_no:
 		if cancel_status == State.Cancel_entrust_failed or cancel_status == State.Idle and self.timeout(active_dt, self.now):
 		    logger.debug('%s cancel order %d for %s', self.now, active_no, ins)
@@ -228,24 +228,24 @@ class Algorithm(object):
 
 
 class TWAP(Algorithm):
-    def __init__(self, broker, predictor, tasks, date, interval, market=AShare()):
-	super(TWAP, self).__init__(broker, predictor, tasks, market, 9)
+    def __init__(self, broker, predictor, task, date, interval):
+	super(TWAP, self).__init__(broker, predictor, task, 9)
 	self.interval = interval
-	self.market.generate_intervals(int(date), interval, tasks)
-	logger.info('Number of twap intervals: %d', len(self.market.intervals))
+	self.task.generate_intervals(int(date), interval)
+	logger.info('Number of twap intervals: %d', len(self.task.intervals))
 	
     def update_status(self, ins):
 	'''
-	in the current interval, if an order is finished, we have to record it by calling market.add_current
+	in the current interval, if an order is finished, we have to record it by calling task.add_current
 	'''
-	self.market.shift_intervals(self.now)
+	self.task.shift_intervals(self.now)
         order_status, cancel_status, no, dt, bs, shares = super(TWAP, self).update_status(ins)
 	if order_status == State.Full or cancel_status == State.Cancelled:
-	    self.market.add_current(ins, bs, shares)
+	    self.task.add_current(ins, bs, shares)
 	return order_status, cancel_status, no, dt, bs, shares
 
     def get_time_level(self):
-        x = self.interval / (self.market.get_current_right() - self.now).total_seconds() + 0.01
+        x = self.interval / (self.task.get_current_right() - self.now).total_seconds() + 0.01
 	return min(int(x), 10)
 
     def get_buy_price(self, ins):
@@ -267,7 +267,7 @@ class TWAP(Algorithm):
 	return False
 
     def get_shares(self, ins, bs):
-	return self.market.check_current(ins, bs, self.now)	
+	return self.task.check_current(ins, bs, self.now)	
 
     def get_buy_shares(self, ins):	
 	return self.get_shares(ins, 'buy')
@@ -293,10 +293,6 @@ def set_logger(debug=False):
     logger.addHandler(console)
 
 
-def task_template(no, instrument):
-    if no == 0:
-        return {instrument: {'buy': 100000, 'sell': 100000}}
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter)
@@ -310,8 +306,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     set_logger(args.debug)  
 
-    inst = args.instrument
-    tasks = task_template(args.task, instrument=inst)
+    task = Task(args.task, args.instrument)
     user = getpass.getuser()
     db = cfg.redis.db[user]
     host = redis.Redis(cfg.redis.host, db=db)
@@ -328,14 +323,14 @@ if __name__ == '__main__':
         date = args.date    
  
     broker = Broker(host, name, accounts, date=date)
-    predictor = HiLo(date, tasks.keys())
-    algo = TWAP(broker, predictor, tasks, date, interval=interval)
+    predictor = HiLo(date, task)
+    algo = TWAP(broker, predictor, task, date, interval=interval)
 
     feed.tick_event.subscribe(broker.on_tick)
     feed.tick_event.subscribe(algo.on_feed)
-    feed.run(date, tasks.keys())
+    feed.run(date, task.get_instruments())
 
     algo.keep_results()
-    basic(algo.results[inst])
+    basic(algo.results.values()[0])
 
 
